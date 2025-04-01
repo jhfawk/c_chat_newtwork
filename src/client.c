@@ -7,15 +7,6 @@
 #define DEFAULT_PORT 7000
 #define INITIALS_SIZE 40
 
-//printf("\033[XA"); // Move up X lines;
-//printf("\033[XB"); // Move down X lines;
-//printf("\033[XC"); // Move right X column;
-//printf("\033[XD"); // Move left X column;
-///printf("\033[2J"); // Clear screen
-
-#define clear() printf("\033[H\033[J")
-#define gotoxy(x,y) printf("\033[%d;%dH", (y), (x))
-
 typedef struct {
     uv_stream_t* tcp_stream;
     char* name;              
@@ -38,7 +29,6 @@ void on_close(uv_handle_t* handle) {
 }
 
 void on_response(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf){
-
     if (nread > 0) {
         printf("%.*s", (int) nread, buf->base);
         free(buf->base);
