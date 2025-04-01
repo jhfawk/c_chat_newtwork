@@ -5,6 +5,7 @@
 
 #define DEFAULT_PORT 7000
 #define DEFAULT_BACKLOG 128
+#define INIT_CAP_MESSAGES 10
 
 
 typedef struct {
@@ -20,15 +21,23 @@ struct client_t
     client_t* prev; 
 };
 
+typedef struct{
+    int len;
+    int cap;
+    char** messages;
+} message_history;
+
+typedef struct {
+    message_history* msg_history;
+    client_t* client_p;
+} client_context;
+
 
 uv_loop_t *loop;
 struct sockaddr_in addr;
 client_t* clients_head = NULL;
 
-
 void write_handle(uv_write_t *req, int status);
-//void broadcast_handle(uv_write_t *req, int status);
-
 
 void free_write_req(uv_write_t *req) {
     write_req_t *wr = (write_req_t*) req;
@@ -42,7 +51,7 @@ void alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf) {
 }
 
 void on_close(uv_handle_t* handle) {
-    client_t* client_ = (client_t*) handle->data;
+    client_t* client_ = (client_t*) ((client_context*) handle->data)->client_p;
 
     if (client_->prev)
         client_->prev->next = client_->next;
@@ -57,8 +66,6 @@ void on_close(uv_handle_t* handle) {
 
 void broadcast_message(uv_stream_t * client, char* str, int nread){
     client_t* ptr = clients_head;
-    // char prefix[] = "\t\tyou: ";
-    // char* tmp;
     
     while (ptr)
     {
@@ -68,10 +75,9 @@ void broadcast_message(uv_stream_t * client, char* str, int nread){
             buf.base[nread] = '\0';
             uv_write(req, (uv_stream_t*) &(ptr->handle), &buf, 1, write_handle);
         }
-
-        ptr = ptr->prev;        
+        ptr = ptr->prev;       
     }
-    free(str);
+    //free(str);
 }
 
 void write_handle(uv_write_t *req, int status) {
@@ -81,6 +87,21 @@ void write_handle(uv_write_t *req, int status) {
     free_write_req(req);
 }
 
+void add_msg_to_history(message_history* history, char* msg){
+    if (history->len >= history->cap - 1){
+        history->cap *= 2;
+        history->messages = realloc(history->messages, sizeof(char*) * history->cap);
+    }
+    history->messages[history->len++] = msg;
+}
+
+void free_history(message_history* history){
+    for (int i = 0; i < history->len; i++)
+        free(history->messages[i]);
+    free(history->messages);
+    free(history);
+}
+
 void read_handle(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
     if (nread > 0) {
         fwrite(buf->base, 1, nread, stdout);
@@ -88,6 +109,7 @@ void read_handle(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
         char *msg = malloc(nread + 1);
         memcpy(msg, buf->base, nread);
         msg[nread] = '\0';
+        add_msg_to_history(((client_context*)client->data)->msg_history, strdup(msg));
         broadcast_message(client, msg, nread);
         free(buf->base);
         return;
@@ -101,6 +123,14 @@ void read_handle(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
     free(buf->base);
 }
 
+void write_history(message_history* history, client_t* client){
+    for (int i = 0; i < history->len; i++)
+    {
+        uv_write_t* req = (uv_write_t*) malloc(sizeof(uv_write_t));
+        uv_buf_t buf = uv_buf_init(history->messages[i], strlen(history->messages[i]));
+        uv_write(req, (uv_stream_t*) client, &buf, 1, write_handle);
+    }
+}
 
 void on_new_connection(uv_stream_t *server, int status) {
     if (status < 0) {
@@ -113,7 +143,14 @@ void on_new_connection(uv_stream_t *server, int status) {
     uv_tcp_init(loop, &(client_->handle));
 
 
-    client_->handle.data = client_;
+    //client_->handle.data = server->data;
+    //client_->handle.data = client_;
+
+    client_context* ptr_context = malloc(sizeof(*ptr_context));
+    ptr_context->client_p = client_;
+    ptr_context->msg_history = (message_history*)server->data;
+
+    client_->handle.data = ptr_context;
     client_->prev = clients_head;
     client_->next = NULL;
     
@@ -125,6 +162,7 @@ void on_new_connection(uv_stream_t *server, int status) {
 
     if (uv_accept(server, (uv_stream_t*) client_) == 0) {
         uv_read_start((uv_stream_t*) client_, alloc_buffer, read_handle);
+        write_history(server->data, client_);
     }
     else {
         uv_close((uv_handle_t*) client_, on_close);
@@ -136,17 +174,23 @@ void on_new_connection(uv_stream_t *server, int status) {
 int main() {
     loop = uv_default_loop();
 
-    uv_tcp_t* server;
-    uv_tcp_init(loop, server);
+    uv_tcp_t server;
+    uv_tcp_init(loop, &server);
 
+    message_history* msg_history = malloc(sizeof(*msg_history));
+    msg_history->cap = INIT_CAP_MESSAGES;
+    msg_history->len = 0;
+    msg_history->messages = calloc(msg_history->cap, sizeof(char*));
+    
     uv_ip4_addr("127.0.0.1", DEFAULT_PORT, &addr);
 
-    uv_tcp_bind(server, (const struct sockaddr*)&addr, 0);
-    int r = uv_listen((uv_stream_t*) server, DEFAULT_BACKLOG, on_new_connection);
+    (&server)->data = msg_history;
+
+    uv_tcp_bind(&server, (const struct sockaddr*)&addr, 0);
+    int r = uv_listen((uv_stream_t*) &server, DEFAULT_BACKLOG, on_new_connection);
     if (r) {
         fprintf(stderr, "Listen error %s\n", uv_strerror(r));
         return 1;
     }
     return uv_run(loop, UV_RUN_DEFAULT);
-
 }
