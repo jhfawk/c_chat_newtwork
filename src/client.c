@@ -18,6 +18,13 @@ struct sockaddr_in dest;
 void read_stdin(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf);
 
 
+void print_invite_to_type(){
+    printf("\033[31m"); //red color
+    printf("Message:");
+    printf("\033[39m"); //default color
+}
+
+
 void alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf) {
     buf->base = (char*) malloc(suggested_size + 1);
     buf->base[suggested_size] = '\0';
@@ -28,12 +35,18 @@ void on_close(uv_handle_t* handle) {
     free(handle);
 }
 
+
 void on_response(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf){
     if (nread > 0) {
-        printf("%.*s", (int) nread, buf->base);
+        printf("\033[2K\r"); // clear entire line and return carriage
+        fflush(stdout);
+
+        printf("%.*s", (int)nread, buf->base);
         free(buf->base);
-        return;
-    }
+
+        print_invite_to_type();
+        fflush(stdout);
+    }   
 
     if (nread < 0) {
         if (nread != UV_EOF)
@@ -55,15 +68,21 @@ void write_handle(uv_write_t* wreq, int status){
 void read_stdin(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf){
     if (nread > 0){
         buf->base[nread] = '\0';
+
         printf("\033[1A");
-        printf("\x1b[2K");
+        printf("\033[2K\r"); // clear entire line and return carriage
+        fflush(stdout);
+
         printf("\t\tyou: %s", buf->base);
+
+        print_invite_to_type();
+        fflush(stdout);
 
         char* name = ((client_context_t *) stream->data)->name;
         char* tmp = calloc(strlen(name) + strlen(buf->base) + 3, sizeof(*tmp));
         sprintf(tmp, "%s: %s", name, buf->base);
  
-        uv_buf_t w_buf = uv_buf_init(tmp, strlen(tmp) + 1);
+        uv_buf_t w_buf = uv_buf_init(tmp, strlen(tmp));
         uv_write_t* wr_req = (uv_write_t* ) malloc(sizeof(uv_write_t));
         wr_req->data = tmp;
 
@@ -96,6 +115,8 @@ void on_connect(uv_connect_t *req, int status) {
     con->tcp_stream = req->handle;
     con->name = (char*) req->data;
     stdin_pipe->data = con;
+
+    print_invite_to_type();
 
     uv_read_start((uv_stream_t*)stdin_pipe, alloc_buffer, read_stdin);
     uv_read_start((uv_stream_t*)req->handle, alloc_buffer, on_response);
